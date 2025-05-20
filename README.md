@@ -17,6 +17,9 @@ We welcome contributions from the community! If you're interested in optical des
 ### Method 1: Local Installation
 1. Clone or download this repository
 2. Run `python autolens.py`
+#### faster autolens 
+1. Run `python flash_autolens.py`  
+  speed up from original 90min to about 5min on A100 gpu(maybe a little slower at the first time because triton git compile)
 
 ### Method 2: Google Colab
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/singer-yang/AutoLens/blob/main/autolens.ipynb)

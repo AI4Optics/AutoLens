@@ -2,3 +2,4 @@
 .vscode
 deeplens/__pycache__
 deeplens/**/*.pyc
+**/__pycache__

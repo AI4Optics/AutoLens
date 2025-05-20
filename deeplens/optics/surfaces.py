@@ -1,14 +1,19 @@
 """ Geometric surfaces for ray tracing.
 """
-import torch
 import math
-import numpy as np
-import torch.nn.functional as nnF
-import matplotlib.pyplot as plt
 
-from .basics import *
-from .materials import Material
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.nn.functional as nnF
+
 from ..utils import *
+from .basics import *
+from .flash_op.flash_newtons_method import flash_newtons_method
+from .flash_op.flash_refaction import flash_refaction
+from .flash_op.flash_sag import flash_sag
+from .materials import Material
+
 
 class Surface(DeepObj):
     def __init__(self, r, d, mat2, is_square=False, device=DEVICE):
@@ -31,7 +36,7 @@ class Surface(DeepObj):
         self.NEWTONS_TOLERANCE_LOOSE = 50e-6 # in [mm], here is 50 [nm] 
         self.NEWTONS_STEP_BOUND = 5 # [mm], maximum iteration step in Newton's iteration
         self.APERTURE_SAMPLING = 257
-
+        self.eta = torch.zeros([len(WAVE_RGB)])
         self.to(device)
 
     # ==============================
@@ -40,6 +45,7 @@ class Surface(DeepObj):
     def ray_reaction(self, ray, n1=None, n2=None):
         """ Compute output ray after intersection and refraction with a surface.
         """
+
         # Intersection
         ray = self.intersect(ray, n1)
 
@@ -47,7 +53,12 @@ class Surface(DeepObj):
         ray = self.refract(ray, n1 / n2)
 
         return ray
-    
+    #ray.o : (len(waves), ...,3),ray.d : (len(waves), ...,3)
+    #the first dimension of ray is the number of waves
+    def ray_reaction_multi_waves(self, ray):
+        ray = self.intersect_multi_waves(ray)
+        ray = self.refract_multi_waves(ray)
+        return ray
     def intersect(self, ray, n):
         """ Solve ray-surface intersection and update ray position and opl.
 
@@ -163,8 +174,53 @@ class Surface(DeepObj):
         ray.ra = ray.ra * valid
 
         return ray
+    def intersect_multi_waves(self, ray):
+        o_o, o_ra = flash_newtons_method(
+            ray.o,
+            ray.d,
+            ray.ra,
+            (self.d + self.d_perturb),
+            self.k,
+            self.c,
+            float(self.r),
+            self.ai2,
+            self.ai4,
+            self.ai6,
+            self.ai8,
+            self.ai10,
+            self.ai12,
+            self.NEWTONS_TOLERANCE_LOOSE,
+            self.NEWTONS_TOLERANCE_TIGHT,
+            self.NEWTONS_MAXITER,
+            self.NEWTONS_STEP_BOUND,
+        )
+        ray.o = o_o
+        ray.ra = o_ra
+        return ray
 
+    def refract_multi_waves(self, ray):
+        channel = ray.o.shape[0]
+        o_d, o_ra, o_obliq, valid = flash_refaction(
+            ray.o,
+            ray.d,
+            ray.ra,
+            ray.obliq,
+            self.eta[:channel],
+            (self.d + self.d_perturb),
+            self.k,
+            self.c,
+            self.ai2,
+            self.ai4,
+            self.ai6,
+            self.ai8,
+            self.ai10,
+            self.ai12,
+        )
 
+        ray.d = o_d
+        ray.obliq = o_obliq
+        ray.ra = o_ra
+        return ray
     def normal(self, ray):
         """ Calculate normal vector of the surface.
 
@@ -278,7 +334,7 @@ class Surface(DeepObj):
         o2 = torch.stack((x2,y2,z2), 1).to(self.device)
         return o2
     
-    def surface(self, x, y):
+    def surface(self, x, y,use_flash_method=False):
         """ Calculate z coordinate of the surface at (x, y) with offset.
             
             This function is used in lens setup plotting.
@@ -396,7 +452,8 @@ class Aperture(Surface):
         if self.diffraction:
             raise Exception('Unimplemented diffraction method.')
         return ray
-    
+    def ray_reaction_multi_waves(self, ray):
+        return self.ray_reaction(ray)
     def g(self, x, y):
         """ Compute surface height.
         """
@@ -537,7 +594,6 @@ class Aspheric(Surface):
         """
         r2 = x**2 + y**2
         total_surface = r2 * self.c / (1 + torch.sqrt(1 - (1 + self.k) * r2 * self.c**2 + EPSILON))
-
         if self.ai_degree > 0:
             if self.ai_degree == 4:
                 total_surface = total_surface + self.ai2 * r2 + self.ai4 * r2 ** 2 + self.ai6 * r2 ** 3 + self.ai8 * r2 ** 4
@@ -555,7 +611,32 @@ class Aspheric(Surface):
 
         return total_surface
 
-
+    def surface(self, x, y, use_flash_method=False):
+        """ Calculate z coordinate of the surface at (x, y) with offset.
+            
+            This function is used in lens setup plotting.
+        """
+         
+        if use_flash_method:
+            x = x if torch.is_tensor(x) else torch.tensor(x).to(self.device)
+            y = y if torch.is_tensor(y) else torch.tensor(y).to(self.device)
+            return self.flash_sag(x, y)
+        else:
+            return super().surface(x, y)
+    def flash_sag(self, x, y):
+        z = flash_sag(
+            x,
+            y,
+            self.k,
+            self.c,
+            self.ai2,
+            self.ai4,
+            self.ai6,
+            self.ai8,
+            self.ai10,
+            self.ai12,
+        )
+        return z
     def dgd(self, x, y):
         """ Compute surface height derivatives to x and y.
         """
@@ -689,7 +770,7 @@ class Aspheric(Surface):
         """
         surf_dict = {
             'type': 'Aspheric',
-            'r': self.r,
+            'r': float(self.r),
             'c': self.c.item(),
             'roc': 1 / self.c.item(),
             'd': self.d.item(),

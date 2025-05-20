@@ -1,7 +1,9 @@
 """ Optical ray class. 
 """
-from .basics import *
 import torch.nn.functional as nnF
+
+from .basics import *
+
 
 class Ray(DeepObj):
     def __init__(self, o, d, wvln=DEFAULT_WAVE, coherent=False, device=DEVICE):
@@ -85,3 +87,10 @@ class Ray(DeepObj):
             return copy.deepcopy(self).to(self.device)
         else:
             return copy.deepcopy(self).to(device)
+        
+
+    def shallow_copy(self):
+        tmp_o, tmp_d = self.o.clone(), self.d.clone()
+        tmp_ray = Ray(tmp_o, tmp_d)
+        tmp_ray.ra, tmp_ray.obliq, tmp_ray.opl = self.ra.clone(), self.obliq.clone(), self.opl.clone()
+        return tmp_ray

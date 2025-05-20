@@ -13,25 +13,27 @@ This code and data is released under the Creative Commons Attribution-NonCommerc
     # The material is provided as-is, with no warranties whatsoever.
     # If you publish any code, data, or scientific work based on this, please cite our work.
 """
-import torch
-import random
 import json
 import math
+import random
 import time
-import cv2 as cv
-from tqdm import tqdm
-from scipy import stats
 from datetime import datetime
+
+import cv2 as cv
 import matplotlib.pyplot as plt
+import torch
 import torch.nn.functional as nnF
-from torchvision.utils import save_image, make_grid
+from scipy import stats
+from torchvision.utils import make_grid, save_image
+from tqdm import tqdm
 from transformers import get_cosine_schedule_with_warmup
 
-from .optics import SELLMEIER_TABLE, EPSILON, GEO_SPP, DEFAULT_WAVE, Ray
-from .optics.surfaces import *
+from .optics import DEFAULT_WAVE, EPSILON, GEO_SPP, SELLMEIER_TABLE, Ray
 from .optics.monte_carlo import *
 from .optics.render_psf import *
+from .optics.surfaces import *
 from .utils import *
+
 
 class GeoLens(DeepObj):
     """ Geolens class. A geometric lens consisting of refractive surfaces, simulate with ray tracing. May contain diffractive surfaces, but still use ray tracing to simulate.
@@ -57,7 +59,9 @@ class GeoLens(DeepObj):
             self.find_aperture()
             self.prepare_sensor(sensor_res)
             self.diff_surf_range = self.find_diff_surf()
-            self.post_computation()         
+            self.post_computation()       
+            self.cal_refraction()
+            self.loss_self_intersect_tensor()  
         
         else:
             self.sensor_res = sensor_res
@@ -101,6 +105,17 @@ class GeoLens(DeepObj):
         for i in range(len(self.surfaces)):
             self.surfaces[i].mat1 = self.materials[i]
             self.surfaces[i].mat2 = self.materials[i+1]
+
+    def cal_refraction(self):
+        mat1 = Material("air")
+        for i in range(0, len(self.surfaces)):
+            for j, wv in enumerate(WAVE_RGB):
+                n1 = mat1.ior(wv)
+                n2 = self.surfaces[i].mat2.ior(wv)
+                # print(i, self.surfaces[i].type)
+                self.surfaces[i].eta[j] = n1 / n2
+            mat1 = self.surfaces[i].mat2
+        # print("in cal", self.surfaces[1].eta)
 
     def prepare_sensor(self, sensor_res=[512, 512], sensor_size=None):
         """ Create sensor.
@@ -556,7 +571,7 @@ class GeoLens(DeepObj):
     # ====================================================================================
     # Ray Tracing functions
     # ====================================================================================
-    def trace(self, ray, lens_range=None, record=False):
+    def trace(self, ray, lens_range=None, use_flash_method=False, record=False):
         """ General ray tracing function. Ray in and ray out.
 
             Transform between local and world coordinates and do ray tracing under local coordinates. 
@@ -579,7 +594,10 @@ class GeoLens(DeepObj):
         
         if is_forward:
             ray.propagate_to(self.surfaces[0].d - 10.0)    # for high-precision opd calculation
-            valid, ray_out, oss = self.forward_tracing(ray, lens_range, record=record)
+            if use_flash_method:
+                valid, ray_out, oss = self.forward_tracing_multi_waves(ray, lens_range, record=record)
+            else:
+                valid, ray_out, oss = self.forward_tracing(ray, lens_range, record=record)
         else:
             valid, ray_out, oss = self.backward_tracing(ray, lens_range, record=record)
 
@@ -651,7 +669,29 @@ class GeoLens(DeepObj):
         
         valid = (ray.ra == 1)
         return valid, ray, oss
+    def forward_tracing_multi_waves(self, ray, lens_range, record):
+        """Trace rays from object space to sensor plane."""
+        dim = ray.o[..., 2].shape  # What does this mean: how many rays do we have? here 31*31
 
+        if record:
+            oss = []  # oss records all points of intersection. ray.o shape of [N, 3]
+            for i in range(dim[0]):
+                oss.append([ray.o[i, :].cpu().detach().numpy()])
+        else:
+            oss = None
+
+        # print(lens_range)
+        for i in lens_range:
+            ray = self.surfaces[i].ray_reaction_multi_waves(ray)
+            valid = ray.ra == 1
+            if record:
+                p = ray.o
+                for os, v, pp in zip(oss, valid.cpu().detach().numpy(), p.cpu().detach().numpy()):
+                    if v.any():
+                        os.append(pp)
+
+        valid = ray.ra == 1
+        return valid, ray, oss
 
     def backward_tracing(self, ray, lens_range, record):
         """ Trace rays from sensor plane to object space.
@@ -1773,11 +1813,11 @@ class GeoLens(DeepObj):
             if foclen is None:
                 foclen = self.calc_efl()
             aper_r = foclen / fnum / 2
-            self.surfaces[self.aper_idx].r = aper_r
+            self.surfaces[self.aper_idx].r = float(aper_r)
         else:
-            self.surfaces[self.aper_idx].r = aper_r
+            self.surfaces[self.aper_idx].r = float(aper_r)
         
-        self.fnum = self.foclen / aper_r / 2
+        self.fnum = float(self.foclen / aper_r / 2)
 
     
     def set_target_fov_fnum(self, hfov, fnum, imgh=None):
@@ -2450,7 +2490,7 @@ class GeoLens(DeepObj):
     # ====================================================================================
     # Loss function
     # ====================================================================================
-    def loss_infocus(self, bound=0.005):
+    def loss_infocus(self, bound=0.005,use_flash_method=False):
         """ Sample parallel rays and compute RMS loss on the sensor plane, minimize focus loss.
 
         Args:
@@ -2461,7 +2501,7 @@ class GeoLens(DeepObj):
         for wv in WAVE_RGB:
             # Ray tracing
             ray = self.sample_parallel(fov=0.0, M=31, wvln=wv, entrance_pupil=True)
-            ray, _, _ = self.trace(ray)
+            ray, _, _ = self.trace(ray,use_flash_method=use_flash_method)
             p = ray.project_to(focz)
 
             # Calculate RMS spot size as loss function
@@ -2554,6 +2594,12 @@ class GeoLens(DeepObj):
 
         return loss
 
+    def loss_self_intersect_tensor(self):
+        self.intersect1 = torch.tensor([0, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0]).to(self.device)
+        self.intersect2 = torch.linspace(0.6, 1, 11).to(self.device)
+        self.zero_y1 = torch.zeros_like(self.intersect1)
+        self.merged_zero_y1 = torch.concat([self.zero_y1, self.zero_y1], dim=-1)
+        self.zero_y2 = torch.zeros_like(self.intersect2)
 
     def loss_self_intersec(self, dist_bound=0.2, thickness_bound=0.4, flange_bound=0.6):
         """ Loss function to avoid self-intersection. Loss is designed by the distance to the next surfaces.
@@ -2591,9 +2637,55 @@ class GeoLens(DeepObj):
         loss += min(flange_bound, torch.min(z_last_surf))
         
         return - loss
- 
+    def loss_self_intersec_new(self, dist_bound=0.2, thickness_bound=0.4, flange_bound=0.6):
+        """Loss function to avoid self-intersection. Loss is designed by the distance to the next surfaces.
 
-    def loss_ray_angle(self, target=0.6, depth=DEPTH):
+        Args:
+            dist_bound (float): distance bound.
+            thickness_bound (float): thickness bound.
+
+        Parameter settings:
+            For cellphone lens: dist_bound=0.1, thickness_bound=0.4
+            For camera lens: dist_bound=1.0, thickness_bound=1.0
+            General: dist_bound=thickness_bound=0.5 * (total_thickness_of_lens / lens_element_number / 2)
+        """
+        loss = 0.0
+        # time_cost = TimeMeter()
+        # time_cost.start()
+        prev_z_front = None
+        # Calculate distance between surfaces
+        for i in range(len(self.surfaces) - 1):
+            current_surf = self.surfaces[i]
+            next_surf = self.surfaces[i + 1]
+            r = self.intersect1 * current_surf.r
+            next_r = self.intersect1 * next_surf.r
+            # print("in self_intersec before surface cost:", time_cost.intervalToNow())
+            if prev_z_front is None:
+                z_front = current_surf.surface(r, self.zero_y1,use_flash_method=True) + current_surf.d
+            else:
+                z_front = prev_z_front
+
+            merged_r = torch.concat([r, next_r], dim=-1)
+            merged_z_next = next_surf.surface(merged_r, self.merged_zero_y1,use_flash_method=True) + next_surf.d
+            z_next, prev_z_front = torch.split(merged_z_next, merged_z_next.shape[-1]//2, dim=-1)
+
+            # print("in self_intersec  after surface cost:", time_cost.intervalToNow())
+
+            dist_min = torch.min(z_next - z_front)
+
+            if self.surfaces[i].mat2.name != "air":
+                loss += min(thickness_bound, dist_min)
+            else:
+                loss += min(dist_bound, dist_min)
+        # Calculate distance to the sensor
+        last_surf = self.surfaces[-1]
+        r = self.intersect2 * last_surf.r
+        z_last_surf = self.d_sensor - last_surf.surface(r, self.zero_y2,use_flash_method=True) - last_surf.d
+        loss += min(flange_bound, torch.min(z_last_surf))
+        # print("in self_intersec cost:", time_cost.intervalToNow())
+        return -loss
+
+    def loss_ray_angle(self, target=0.6, depth=DEPTH, use_flash_method=False):
         """ Loss function designed to penalize large incident angle rays.
 
             Reference value: > 0.7
@@ -2605,7 +2697,7 @@ class GeoLens(DeepObj):
         ray = self.sample_point_source(M=M, spp=spp, depth=DEPTH, R=scale*self.sensor_size[0]/2, pupil=True)
 
         # Ray tracing
-        ray, _, _ = self.trace(ray)
+        ray, _, _ = self.trace(ray,use_flash_method=use_flash_method)
 
         # Loss (we want to maximize ray angle term)
         loss = torch.sum(ray.obliq * ray.ra) / (torch.sum(ray.ra) + EPSILON)
@@ -2614,11 +2706,11 @@ class GeoLens(DeepObj):
         return - loss
 
 
-    def loss_reg(self, w_focus=2.0):
+    def loss_reg(self, w_focus=2.0, use_flash_method=False):
         """ An empirical regularization loss for lens design.
         """
         if self.is_cellphone:
-            loss_reg = w_focus * self.loss_infocus() + self.loss_self_intersec(dist_bound=0.1, thickness_bound=0.3, flange_bound=0.5) + 0.05 * self.loss_ray_angle()
+            loss_reg = w_focus * self.loss_infocus(use_flash_method=use_flash_method) + self.loss_self_intersec(dist_bound=0.1, thickness_bound=0.3, flange_bound=0.5) + 0.05 * self.loss_ray_angle(use_flash_method=use_flash_method)
         else:
             loss_reg = w_focus * self.loss_infocus() + self.loss_self_intersec(dist_bound=0.1, thickness_bound=2.0, flange_bound=10.0)
         
@@ -2853,7 +2945,7 @@ class GeoLens(DeepObj):
 
         # self.sensor_size = data['sensor_size']
         self.r_last = data['r_last']
-        self.d_sensor = torch.Tensor([d])
+        self.d_sensor = torch.Tensor([d]).item()
 
 
     def write_lens_json(self, filename='./test.json'):
@@ -2861,7 +2953,7 @@ class GeoLens(DeepObj):
         """
         data = {}
         data['foclen'] = self.foclen
-        data['fnum'] = self.fnum
+        data['fnum'] = float(self.fnum)
         data['r_last'] = self.r_last
         data['d_sensor'] = self.d_sensor.item()
         data['sensor_size'] = self.sensor_size
@@ -2876,7 +2968,6 @@ class GeoLens(DeepObj):
                 surf_dict['d_next'] = self.d_sensor.item() - self.surfaces[i].d.item()
             
             data['surfaces'].append(surf_dict)
-
         with open(filename, 'w') as f:
             json.dump(data, f, indent=4)
 
@@ -3012,7 +3103,7 @@ SURF 0
 # ====================================================================================
 # Other functions.
 # ====================================================================================
-def create_cellphone_lens(hfov=0.6, imgh=6.0, fnum=2.8, lens_num=4, thickness=None, flange=0.8, save_dir='./'):
+def create_cellphone_lens(hfov=0.6, imgh=6.0, fnum=2.8, lens_num=4, thickness=None, flange=0.8, save_dir='./',save=True):
     """ Create a flat starting point for cellphone lens design.
 
         Aperture is placed 0.2mm i front of the first surface.
@@ -3049,7 +3140,7 @@ def create_cellphone_lens(hfov=0.6, imgh=6.0, fnum=2.8, lens_num=4, thickness=No
         d_total += d_lens[2 * i]
         c1 = np.random.randn(1).item() * 0.001
         k1 = np.random.randn(1).item() * 0.01
-        ai1 = np.random.randn(7) * 1e-16
+        ai1 = np.random.randn(6) * 1e-16
         mat = random.choice(mat_names)
         surfaces.append(Aspheric(r = imgh / 2, d = d_total, c = c1, k = k1, ai = ai1, mat2 = mat))
         
@@ -3057,7 +3148,7 @@ def create_cellphone_lens(hfov=0.6, imgh=6.0, fnum=2.8, lens_num=4, thickness=No
         d_total += d_lens[2 * i + 1]
         c2 = np.random.randn(1).item() * 0.001
         k2 = np.random.randn(1).item() * 0.01
-        ai2 = np.random.randn(7) * 1e-16
+        ai2 = np.random.randn(6) * 1e-16
         surfaces.append(Aspheric(r = imgh / 2, d = d_total, c = c2, k = k2, ai = ai2, mat2 = 'air'))
 
     # Lens calculation
@@ -3067,9 +3158,11 @@ def create_cellphone_lens(hfov=0.6, imgh=6.0, fnum=2.8, lens_num=4, thickness=No
     lens.diff_surf_range = lens.find_diff_surf()
     lens.post_computation()
     lens.set_target_fov_fnum(hfov=hfov, fnum=fnum)
-    
+    lens.cal_refraction()
+    lens.loss_self_intersect_tensor()
     # Save lens
-    lens.write_lens_json(f'{save_dir}/starting_point_hfov{hfov}_imgh{imgh}_fnum{fnum}.json')
+    if save:
+        lens.write_lens_json(f'{save_dir}/starting_point_hfov{hfov}_imgh{imgh}_fnum{fnum}.json')
     return lens
 
 
@@ -3125,7 +3218,8 @@ def create_camera_lens(foclen=50.0, imgh=20.0, fnum=4.0, lens_num=4, flange=18.0
     lens.prepare_sensor(sensor_res=lens.sensor_res, sensor_size=[imgh / math.sqrt(2), imgh / math.sqrt(2)])
     lens.diff_surf_range = lens.find_diff_surf()
     lens.post_computation()
-    
+    lens.cal_refraction()
+    lens.loss_self_intersect_tensor()
     # Save lens
     lens.write_lens_json(f'{save_dir}/starting_point_f{foclen}mm_imgh{imgh}_fnum{fnum}.json')
     return lens

@@ -1,10 +1,10 @@
 """ Basic variables and class for DeepLens.
 """
-import torch
 import copy
-import numpy as np
-import torch.nn as nn
 
+import numpy as np
+import torch
+import torch.nn as nn
 
 # ===========================================
 # Variables
