@@ -1,0 +1,241 @@
+# Copyright 2026 KAUST Computational Imaging Group, Xinge Yang and DeepLens contributors.
+# This file is part of DeepLens (https://github.com/singer-yang/DeepLens).
+#
+# Licensed under the Apache License, Version 2.0.
+# See LICENSE file in the project root for full license information.
+
+"""Lens starting-point construction for optimization workflows.
+
+Builds a fresh ``GeoLens`` from specs (focal length, F/#, BFL, surface list)
+to serve as the initial state for :mod:`optim` and :mod:`optim_ops`. Pairs
+with the ``init_constraints`` step in ``optim.py`` as the "stage 0" setup
+layer of the lens design pipeline.
+
+Functions:
+    - create_lens(): Create a lens design starting point with flat surfaces
+    - create_surface(): Create a surface object based on the surface type
+"""
+
+import os
+import random
+
+import numpy as np
+import torch
+
+from ..geometric_surface import Aperture, Aspheric, Spheric, ThinLens, Plane
+from ..material import MATERIAL_data
+
+# Common optical glasses for random material selection
+COMMON_GLASSES = [
+    "n-bk7", "n-sk16", "h-k9l", "n-lak14", "n-sk2", "bk7", "n-lak7",
+    "f2", "n-f2", "n-sf5", "n-sf11", "n-sf1",
+    "pmma", "coc", "okp4",
+]
+
+DEFAULT_COVER_GLASS_MATERIAL = "bk7"
+DEFAULT_COVER_GLASS_THICKNESS = 0.3
+DEFAULT_COVER_GLASS_SENSOR_GAP = 0.3
+
+
+# ====================================================================================
+# Lens starting point generation
+# ====================================================================================
+def create_lens(
+    fov,
+    fnum,
+    bfl,
+    foclen=None,
+    imgh=None,
+    thickness=None,
+    surf_list=[["Spheric", "Spheric"], ["Aperture"], ["Spheric", "Aspheric"]],
+    save_dir="./",
+    add_cover_glass=False,
+    cover_glass_sensor_gap=DEFAULT_COVER_GLASS_SENSOR_GAP,
+):
+    """Create a lens design starting point with flat surfaces.
+
+    Contributor: Rayengineer
+
+    Exactly one of ``foclen`` or ``imgh`` must be provided.  ``imgh`` is the
+    diagonal image height, i.e. the sensor radius for the circular sensor
+    model.  The full diagonal distance is ``2 * imgh``.  The other value is
+    derived via ``imgh = foclen * tan(fov / 2)``.
+
+    Args:
+        fov: Diagonal field of view in degrees.
+        fnum: Maximum f-number.
+        bfl: Back focal length — distance from last surface to sensor in mm.
+        foclen: Focal length in mm.  Mutually exclusive with ``imgh``.
+        imgh: Diagonal image height / sensor radius in mm.  Mutually exclusive
+            with ``foclen``.
+        thickness: Total thickness in mm.  Defaults to ``foclen + bfl``.
+        surf_list: List of surface types defining each lens element and aperture.
+        save_dir: Directory to save the lens JSON and analysis.
+        add_cover_glass: If True, append a plane-parallel sensor cover glass.
+        cover_glass_sensor_gap: Air gap from cover-glass rear surface to sensor.
+    """
+    from ..geolens import GeoLens
+
+    # Resolve foclen / imgh
+    half_fov = np.deg2rad(fov / 2)
+    if foclen is not None and imgh is not None:
+        raise ValueError("Specify exactly one of foclen or imgh, not both.")
+    elif foclen is not None:
+        imgh = round(foclen * float(np.tan(half_fov)), 2)
+    elif imgh is not None:
+        foclen = round(imgh / float(np.tan(half_fov)), 4)
+    else:
+        raise ValueError("Specify exactly one of foclen or imgh.")
+
+    # Compute lens parameters
+    aper_r = foclen / fnum / 2
+    if thickness is None:
+        thickness = foclen + bfl
+    d_opt = thickness - bfl
+
+    # Materials: use common glasses instead of the full 700+ catalog
+    mat_names = [m for m in COMMON_GLASSES if m in MATERIAL_data]
+
+    # Create lens
+    lens = GeoLens()
+    surfaces = lens.surfaces
+
+    d_total = 0.0
+    for elem_type in surf_list:
+        if elem_type == "Aperture":
+            d_next = (torch.rand(1) + 0.5).item()
+            surfaces.append(Aperture(r=aper_r, d=d_total))
+            d_total += d_next
+
+        elif isinstance(elem_type, list):
+            if len(elem_type) == 1 and elem_type[0] == "Aperture":
+                d_next = (torch.rand(1) + 0.5).item()
+                surfaces.append(Aperture(r=aper_r, d=d_total))
+                d_total += d_next
+
+            elif len(elem_type) == 1 and elem_type[0] == "ThinLens":
+                d_next = (torch.rand(1) + 1.0).item()
+                surfaces.append(ThinLens(r=aper_r, d=d_total))
+                d_total += d_next
+
+            elif len(elem_type) in [2, 3]:
+                for i, surface_type in enumerate(elem_type):
+                    if i == len(elem_type) - 1:
+                        mat = "air"
+                        d_next = (torch.rand(1) + 0.5).item()
+                    else:
+                        mat = random.choice(mat_names)
+                        d_next = (torch.rand(1) + 1.0).item()
+
+                    surfaces.append(
+                        create_surface(surface_type, d_total, aper_r, imgh, mat)
+                    )
+                    d_total += d_next
+            else:
+                raise Exception("Lens element type not supported yet.")
+        else:
+            raise Exception("Lens type format not correct.")
+
+    # Normalize optical part total thickness
+    d_opt_actual = d_total - d_next
+    for s in surfaces:
+        s.d = s.d / d_opt_actual * d_opt
+
+    # Update surface semi-apertures based on position relative to aperture stop.
+    # Surfaces far from the stop need larger radii to pass off-axis rays.
+    # r_i = aper_r + |d_i - d_stop| * tan(half_fov)
+    d_stop = None
+    for s in surfaces:
+        if isinstance(s, Aperture):
+            d_stop = s.d.item() if hasattr(s.d, "item") else float(s.d)
+            break
+    if d_stop is not None:
+        for s in surfaces:
+            if isinstance(s, Aperture):
+                continue
+            d_i = s.d.item() if hasattr(s.d, "item") else float(s.d)
+            s.r = aper_r + abs(d_i - d_stop) * float(np.tan(half_fov))
+
+    # Optional sensor cover glass. Keep it inside the back focal space and end
+    # it at the sensor plane so ``add_cover_glass=False`` exactly preserves the
+    # previous surface list.
+    if add_cover_glass:
+        cover_glass_sensor_gap = float(cover_glass_sensor_gap)
+        if cover_glass_sensor_gap < 0:
+            raise ValueError("cover_glass_sensor_gap must be non-negative.")
+
+        last_surface_d = (
+            surfaces[-1].d.item()
+            if hasattr(surfaces[-1].d, "item")
+            else float(surfaces[-1].d)
+        )
+        available_bfl = thickness - last_surface_d
+        available_cover_space = available_bfl - cover_glass_sensor_gap
+        cover_thickness = min(
+            DEFAULT_COVER_GLASS_THICKNESS,
+            0.5 * available_cover_space,
+        )
+        if cover_thickness <= 0:
+            raise ValueError("Cover glass requires positive space before the sensor.")
+
+        cover_rear_d = thickness - cover_glass_sensor_gap
+
+        cover_r = imgh
+        if d_stop is not None:
+            cover_r = max(
+                cover_r,
+                aper_r + abs(cover_rear_d - d_stop) * float(np.tan(half_fov)),
+            )
+
+        surfaces.append(
+            Plane(
+                r=cover_r,
+                d=cover_rear_d - cover_thickness,
+                mat2=DEFAULT_COVER_GLASS_MATERIAL,
+            )
+        )
+        surfaces.append(Plane(r=cover_r, d=cover_rear_d, mat2="air"))
+
+    # Lens sensor (dummy sensor resolution)
+    lens = lens.to(lens.device)
+    lens.d_sensor = torch.tensor(thickness).to(lens.device)
+    lens.r_sensor = imgh
+    lens.set_sensor_res(sensor_res=(2000, 2000))
+
+    # Lens calculation
+    lens.float_enpd = True
+    lens.float_foclen = False
+    lens.float_rfov = False
+    lens.post_computation()
+
+    # Save lens
+    os.makedirs(save_dir, exist_ok=True)
+    filename = f"starting_point_f{foclen}mm_imgh{imgh}_fnum{fnum}"
+    lens.write_lens_json(os.path.join(save_dir, f"{filename}.json"))
+    lens.analysis(os.path.join(save_dir, f"{filename}"))
+
+    return lens
+
+
+def create_surface(surface_type, d_total, aper_r, imgh, mat):
+    """Create a surface object based on the surface type."""
+    if mat == "air":
+        c = -float(np.random.rand()) * 0.001
+    else:
+        c = float(np.random.rand()) * 0.001
+    # Use aper_r as initial radius; will be updated after thickness normalization
+    r = aper_r
+
+    if surface_type == "Spheric":
+        return Spheric(r=r, d=d_total, c=c, mat2=mat)
+
+    elif surface_type == "Aspheric":
+        ai = [0.0] * 8
+        k = 0.0
+        return Aspheric(r=r, d=d_total, c=c, ai=ai, k=k, mat2=mat)
+
+    elif surface_type == "Plane":
+        return Plane(r=r, d=d_total, mat2=mat)
+
+    else:
+        raise Exception("Surface type not supported yet.")

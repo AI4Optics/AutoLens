@@ -8,7 +8,7 @@ EXP_NAME: 'Auto lens design'
 HFOV: 0.73
 FNUM: 2.0
 DIAG: 10.0
-lens_num: 7
+bfl: 1.0
 lrs: [3e-4, 5e-4, 1e-1, 1e-2] # aspheric lens design
 
 # # camera lens target

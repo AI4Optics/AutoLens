@@ -16,7 +16,7 @@ We welcome contributions from the community! If you're interested in optical des
 
 ### Method 1: Local Installation
 1. Clone or download this repository
-2. Run `python autolens.py`
+2. Run `python 1_autolens.py`
 
 ### Method 2: Google Colab
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/singer-yang/AutoLens/blob/main/autolens.ipynb)
@@ -31,24 +31,24 @@ We are working on a packaged .exe version for easier deployment.
 - F-number: 2.0
 - Focal Length: 4.55mm
 
-![Wide-Angle Lens Design](imgs/lens_design1.gif)
+![Wide-Angle Lens Design](datasets/imgs/lens_design1.gif)
 
 ### Example 2: Full-Frame Lens
 - Field of View: Full-frame
 - F-number: 3.0
 - Focal Length: 50mm
 
-![Full-Frame Lens Design](imgs/lens_design2.gif)
+![Full-Frame Lens Design](datasets/imgs/lens_design2.gif)
 
 ### Example 3: Randomized Designs
 20 random automated lens design results for FoV 80°, F/2.0, 4.55mm focal length.
 
-![Randomized Designs](imgs/lens_design.png)
+![Randomized Designs](datasets/imgs/lens_design.png)
 
 ### Example 4: Aspherical Lens
 An aspherical lens demonstrating outstanding optical performance.
 
-![Aspherical Lens](imgs/cellphone_example.png)
+![Aspherical Lens](datasets/imgs/cellphone_example.png)
 
 ## Citation
 

@@ -6,7 +6,7 @@ In this code, we will load a lens from a file. Then we will plot the lens setup 
 from deeplens import GeoLens
 
 def main():
-    lens = GeoLens(filename='./lens_zoo/cellphone.json')
+    lens = GeoLens(filename='./datasets/lens_zoo/cellphone.json')
     lens.analysis(render=True)
 
 if __name__=='__main__':
