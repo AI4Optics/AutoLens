@@ -31,6 +31,7 @@ from .config import (
 from .geolens_pkg.eval import GeoLensEval
 from .geolens_pkg.io import GeoLensIO
 from .geolens_pkg.optim import GeoLensOptim
+from .geolens_pkg.optim_2nd import GeoLensOptim2nd
 from .geolens_pkg.paraxial import GeoLensParaxial
 from .geolens_pkg.psf_compute import GeoLensPSF
 from .geolens_pkg.eval_seidel import GeoLensSeidel
@@ -49,6 +50,7 @@ class GeoLens(
     GeoLensEval,
     GeoLensSeidel,
     GeoLensOptim,
+    GeoLensOptim2nd,
     GeoLensSurfOps,
     GeoLensVis,
     GeoLensIO,

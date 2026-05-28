@@ -780,7 +780,6 @@ class GeoLensOptim:
         save_loss_curve(loss_history, result_dir)
         pbar.close()
 
-    
 
     # ====================================================================================
     # Optimizer helpers
