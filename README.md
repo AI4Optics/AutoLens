@@ -1,63 +1,93 @@
 # AutoLens
 
-AutoLens is an open-source automated lens design framework that uses gradient backpropagation and deep learning techniques to optimize optical systems from scratch. Built on top of the [DeepLens](https://github.com/singer-yang/DeepLens) framework, AutoLens aims to provide a modern, AI-driven approach to optical design.
+**AI-powered automated optical lens design using differentiable optimization and deep learning**
 
-## News
+AutoLens is an automated lens design project that uses gradient backpropagation and curriculum learning to optimize optical systems from scratch. Built on top of the [DeepLens](https://github.com/singer-yang/DeepLens) differentiable optics framework, AutoLens delivers optimization capabilities that go far beyond what commercial lens design software can offer.
 
-**[01/21/2025]** Please use the automated lens design examples in the DeepLens repository, as we currently don't have enough resources to maintain this repository. We are working on ways to extend and improve this project.
+## Key Features
 
-## About
-
-AutoLens is being developed as open-source lens design software, aiming to provide capabilities similar to commercial tools like Zemax. The project incorporates advanced algorithms including end-to-end lens design and implicit representation techniques, with ongoing updates in the DeepLens framework.
-
-We welcome contributions from the community! If you're interested in optical design and AI, please contact Xinge Yang at xinge.yang@kaust.edu.sa.
+- End-to-end differentiable ray tracing with PyTorch
+- Curriculum learning for ab initio (from-scratch) lens design
+- Wide-angle, full-frame, and cellphone lens optimization
+- Aspherical and spherical surface support
+- GPU-accelerated via CUDA
+- Compatible with the [DeepLens](https://github.com/singer-yang/DeepLens) framework
 
 ## Getting Started
 
-### Method 1: Local Installation
-1. Clone or download this repository
-2. Run `python 1_autolens.py`
+```bash
+# Clone the repository
+git clone https://github.com/singer-yang/AutoLens.git
+cd AutoLens
 
-### Method 2: Google Colab
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/singer-yang/AutoLens/blob/main/autolens.ipynb)
+# Create and activate the conda environment
+conda env create -f environment.yml
+conda activate autolens
 
-### Method 3: Packaged Executable (Coming Soon)
-We are working on a packaged .exe version for easier deployment.
+# Run the automated lens design script
+python 1_autolens.py
+
+# (Optional) Refine an existing lens design
+python 2_lens_optim.py
+```
 
 ## Lens Design Examples
 
 ### Example 1: Wide-Angle Lens
-- Field of View: 80°
-- F-number: 2.0
-- Focal Length: 4.55mm
 
-![Wide-Angle Lens Design](datasets/imgs/lens_design1.gif)
+- Field of View: 80°
+- F-number: F/2.0
+- Focal Length: 4.55 mm
+
+![AutoLens wide-angle lens design optimization animation — FoV 80°, F/2.0, 4.55mm](assets/imgs/lens_design1.gif)
 
 ### Example 2: Full-Frame Lens
-- Field of View: Full-frame
-- F-number: 3.0
-- Focal Length: 50mm
 
-![Full-Frame Lens Design](datasets/imgs/lens_design2.gif)
+- Field of View: Full-frame (43.3 mm diagonal)
+- F-number: F/2.0
+- Focal Length: 50 mm
 
-### Example 3: Randomized Designs
-20 random automated lens design results for FoV 80°, F/2.0, 4.55mm focal length.
+![AutoLens full-frame lens design optimization animation — F/3.0, 50mm focal length](assets/imgs/lens_design2.gif)
 
-![Randomized Designs](datasets/imgs/lens_design.png)
+### Example 3: Multiple Designs from Random Seeds
 
-### Example 4: Aspherical Lens
-An aspherical lens demonstrating outstanding optical performance.
+20 randomized automated lens design results for FoV 80°, F/2.0, 4.55 mm focal length — demonstrating the diversity of solutions the optimizer can discover.
 
-![Aspherical Lens](datasets/imgs/cellphone_example.png)
+![AutoLens 20 randomized lens design results for wide-angle FoV 80° F/2.0](assets/imgs/lens_design.png)
+
+### Example 4: Ultra Design Targets
+
+AutoLens supports challenging ultra-specification targets such as F/1.2 high-speed camera lenses and 120° wide-angle cellphone lenses. The figure below shows 8 diverse optimized designs across these demanding specifications.
+
+![AutoLens ultra design targets — F/1.2 camera lens and 120° cellphone lens examples](assets/imgs/ultra_target.png)
+
+## Project Structure
+
+```
+AutoLens/
+├── 1_autolens.py        # Automated design from scratch (curriculum learning)
+├── 2_lens_optim.py      # Refine an existing lens with Adam optimizer
+├── 0_hello_deeplens.py  # Introductory example
+├── configs/             # Lens configuration files
+├── deeplens/            # Core ray-tracing engine (DeepLens submodule)
+├── datasets/            # Example lens files
+└── assets/              # Images, animations, and other static assets
+```
 
 ## Citation
 
 If you find this repository helpful, please cite our paper:
 
 ```bibtex
-@article{yang2023curriculum,
+@article{yang2024curriculum,
   title={Curriculum learning for ab initio deep learned refractive optics},
   author={Yang, Xinge and Fu, Qiang and Heidrich, Wolfgang},
-  journal={arXiv preprint arXiv:2302.01089},
-  year={2023}
+  journal={Nature Communications},
+  year={2024},
+  publisher={Nature Publishing Group}
 }
+```
+
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE).

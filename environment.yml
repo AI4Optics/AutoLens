@@ -1,0 +1,17 @@
+name: autolens
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pytorch
+  - torchvision
+  - pytorch-cuda=12.8
+  - numpy
+  - matplotlib
+  - pillow
+  - tqdm
+  - pip
+  - pip:
+    - opencv-python
